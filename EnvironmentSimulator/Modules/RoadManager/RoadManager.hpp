@@ -285,10 +285,9 @@ namespace roadmanager
 
 	typedef enum
 	{
-		UNKNOWN,
-		SUCCESSOR,
-		PREDECESSOR,
-		NONE
+		NONE = 0,
+		SUCCESSOR = 1,
+		PREDECESSOR = -1
 	} LinkType;
 
 
@@ -650,10 +649,10 @@ namespace roadmanager
 
 	enum ContactPointType
 	{
-		CONTACT_POINT_UNKNOWN,
+		CONTACT_POINT_UNDEFINED,
 		CONTACT_POINT_START,
 		CONTACT_POINT_END,
-		CONTACT_POINT_NONE,  // No contact point for element type junction
+		CONTACT_POINT_JUNCTION,  // No contact point for element type junction
 	};
 
 	class RoadLink
@@ -666,7 +665,7 @@ namespace roadmanager
 			ELEMENT_TYPE_JUNCTION,
 		} ElementType;
 
-		RoadLink() : type_(NONE), element_id_(-1), element_type_(ELEMENT_TYPE_UNKNOWN), contact_point_type_(CONTACT_POINT_UNKNOWN) {}
+		RoadLink() : type_(NONE), element_id_(-1), element_type_(ELEMENT_TYPE_UNKNOWN), contact_point_type_(CONTACT_POINT_UNDEFINED) {}
 		RoadLink(LinkType type, ElementType element_type, int element_id, ContactPointType contact_point_type) :
 			type_(type), element_id_(element_id), element_type_(element_type),  contact_point_type_(contact_point_type) {}
 		RoadLink(LinkType type, pugi::xml_node node);
@@ -1300,11 +1299,44 @@ namespace roadmanager
 		Lane* GetDrivingLaneById(double s, int idx);
 		int GetNumberOfDrivingLanesSide(double s, int side);  // side = -1 right, 1 left
 
-		/// <summary>Get width of road</summary>
-		/// <param name="s">Longitudinal position/distance along the road</param>
-		/// <param name="side">Side of the road: -1=right, 1=left, 0=both</param>
-		/// <param name="laneTypeMask">Bitmask specifying what lane types to consider - see Lane::LaneType</param>
-		/// <returns>Width (m)</returns>
+		/**
+			Check if specified road is directly connected to at specified end of current one (this)
+			@param road Road to check if connected with current one
+			@param contact_point If not null it will contain the contact point of specified road
+			@return true if connection exist, else false
+		*/
+		bool IsDirectlyConnected(Road* road, LinkType link_type, ContactPointType* contact_point = 0);
+
+		/**
+			Check if specified road is directly connected, at least in one end of current one (this)
+			@param road Road to check if connected with current one
+			@return true if connection exist, else false
+		*/
+		bool IsDirectlyConnected(Road* road);
+
+		/**
+			Check if specified road is directly connected as successor to current one (this)
+			@param road Road to check if connected with current one
+			@param contact_point If not null it will contain the contact point of the successor road
+			@return true if connection exist, else false
+		*/
+		bool IsSuccessor(Road *road, ContactPointType* contact_point = 0);
+
+		/**
+			Check if specified road is directly connected as predecessor to current one (this)
+			@param road Road to check if connected with current one
+			@param contact_point If not null it will contain the contact point of the predecessor road
+			@return true if connection exist, else false
+		*/
+		bool IsPredecessor(Road* road, ContactPointType* contact_point = 0);
+
+		/**
+			Get width of road
+			@param s Longitudinal position/distance along the road
+			@param side Side of the road: -1=right, 1=left, 0=both
+			@param laneTypeMask Bitmask specifying what lane types to consider - see Lane::LaneType
+			@return Width (m)
+		*/
 		double GetWidth(double s, int side, int laneTypeMask = Lane::LaneType::LANE_TYPE_ANY);   // side: -1=right, 1=left, 0=both
 
 	protected:
@@ -1329,9 +1361,9 @@ namespace roadmanager
 	{
 	public:
 		LaneRoadLaneConnection() :
-			lane_id_(0), connecting_road_id_(-1), connecting_lane_id_(0), contact_point_(ContactPointType::CONTACT_POINT_NONE) {}
+			lane_id_(0), connecting_road_id_(-1), connecting_lane_id_(0), contact_point_(ContactPointType::CONTACT_POINT_UNDEFINED) {}
 		LaneRoadLaneConnection(int lane_id, int connecting_road_id, int connecting_lane_id) :
-			lane_id_(lane_id), connecting_road_id_(connecting_road_id), connecting_lane_id_(connecting_lane_id), contact_point_(ContactPointType::CONTACT_POINT_NONE) {}
+			lane_id_(lane_id), connecting_road_id_(connecting_road_id), connecting_lane_id_(connecting_lane_id), contact_point_(ContactPointType::CONTACT_POINT_UNDEFINED) {}
 		void SetLane(int id) { lane_id_ = id; }
 		void SetConnectingRoad(int id) { connecting_road_id_ = id; }
 		void SetConnectingLane(int id) { connecting_lane_id_ = id; }
@@ -1415,11 +1447,18 @@ namespace roadmanager
 	public:
 		typedef enum
 		{
+			DEFAULT,
+			DIRECT,
+			VIRTUAL  // not supported yet
+		} JunctionType;
+
+		typedef enum
+		{
 			RANDOM,
 			SELECTOR_ANGLE,  // choose road which heading (relative incoming road) is closest to specified angle
 		} JunctionStrategyType;
 
-		Junction(int id, std::string name) : id_(id), name_(name) {SetGlobalId();}
+		Junction(int id, std::string name, JunctionType type) : id_(id), name_(name), type_(type) {SetGlobalId();}
 		~Junction();
 		int GetId() { return id_; }
 		std::string GetName() { return name_; }
@@ -1439,6 +1478,7 @@ namespace roadmanager
 		JunctionController *GetJunctionControllerByIdx(int index);
 		void AddController(JunctionController controller) { controller_.push_back(controller); }
 		Road* GetRoadAtOtherEndOfConnectingRoad(Road* connecting_road, Road* incoming_road);
+		JunctionType GetType() { return type_; }
 
 	private:
 
@@ -1447,6 +1487,7 @@ namespace roadmanager
 		int id_;
 		int global_id_;
 		std::string name_;
+		JunctionType type_;
 	};
 
 	typedef struct
@@ -1535,14 +1576,6 @@ namespace roadmanager
 		Junction* GetJunctionByIdx(int idx);
 
 		int GetNumOfJunctions() { return (int)junction_.size(); }
-		/**
-			Check if two roads are connected directly
-			@param road1_id Id of the first road
-			@param road2_id Id of the second road
-			@param angle if connected, the angle between road 2 and road 1 is returned here
-			@return 0 if not connected, -1 if road 2 is the predecessor of road 1, +1 if road 2 is the successor of road 1
-		*/
-		int IsDirectlyConnected(int road1_id, int road2_id, double& angle);
 
 		bool IsIndirectlyConnected(int road1_id, int road2_id, int* &connecting_road_id, int* &connecting_lane_id, int lane1_id = 0, int lane2_id = 0);
 
@@ -1556,8 +1589,8 @@ namespace roadmanager
 		int CheckLink(Road *road, RoadLink *link, ContactPointType expected_contact_point_type);
 		int CheckConnectedRoad(Road *road, RoadLink *link, ContactPointType expected_contact_point_type, RoadLink *link2);
 		int CheckJunctionConnection(Junction *junction, Connection *connection);
-		std::string ContactPointType2Str(ContactPointType type);
-		std::string ElementType2Str(RoadLink::ElementType type);
+		static std::string ContactPointType2Str(ContactPointType type);
+		static std::string ElementType2Str(RoadLink::ElementType type);
 
 		int GetNumberOfControllers() { return (int)controller_.size(); }
 		Controller* GetControllerByIdx(int index);
@@ -2435,6 +2468,7 @@ namespace roadmanager
 			double dist;
 			Road* fromRoad;
 			int fromLaneId;
+			ContactPointType contactPoint;
 			PathNode* previous;
 		} PathNode;
 
